@@ -705,3 +705,327 @@ class AudioAnalyzer:
         import os
         _, ext = os.path.splitext(file_path.lower())
         return ext in self.supported_formats 
+
+
+class AudioSearchEngine:
+    """Audio search engine with success detection and ranking"""
+    
+    def __init__(self, clap_manager: CLAPModelManager):
+        """Initialize audio search engine
+        
+        Args:
+            clap_manager: CLAP model manager instance
+        """
+        self.clap_manager = clap_manager
+        
+        # Search success thresholds
+        self.success_thresholds = {
+            "excellent": 0.7,    # 優秀な検索結果
+            "good": 0.5,         # 良好な検索結果
+            "fair": 0.3,         # 普通の検索結果
+            "poor": 0.1          # 貧弱な検索結果
+        }
+        
+        # Common audio categories and their related queries
+        self.audio_categories = {
+            "音楽": [
+                "音楽が流れている", "楽器の音", "歌", "メロディー", "リズム", "ビート",
+                "ピアノ", "ギター", "ドラム", "バイオリン", "オーケストラ", "バンド"
+            ],
+            "人の声": [
+                "人の話し声", "会話", "笑い声", "叫び声", "歌声", "朗読",
+                "男性の声", "女性の声", "子供の声", "老人の声"
+            ],
+            "自然音": [
+                "鳥の鳴き声", "風の音", "雨の音", "波の音", "雷の音", "川の流れ",
+                "森の音", "虫の音", "動物の鳴き声", "木の葉の音"
+            ],
+            "機械音": [
+                "エンジン音", "車の音", "飛行機の音", "電車の音", "機械の音",
+                "アラーム", "ベル", "電話の音", "時計の音", "キーボードの音"
+            ],
+            "環境音": [
+                "街の音", "オフィスの音", "レストランの音", "学校の音", "病院の音",
+                "工場の音", "工事の音", "騒音", "静寂"
+            ]
+        }
+    
+    def search_audio(self, audio_path: str, search_query: str, 
+                    include_related: bool = True, 
+                    category_search: bool = False) -> Dict[str, Any]:
+        """Search audio content with detailed analysis
+        
+        Args:
+            audio_path: Path to audio file
+            search_query: Text query to search for
+            include_related: Whether to include related queries
+            category_search: Whether to search within categories
+            
+        Returns:
+            Dict[str, Any]: Search results with success analysis
+        """
+        import time
+        
+        search_results = {
+            "query": search_query,
+            "audio_path": audio_path,
+            "search_time": time.time(),
+            "results": {},
+            "success_analysis": {},
+            "category_matches": {},
+            "recommendations": []
+        }
+        
+        # Prepare queries
+        queries = [search_query]
+        
+        if include_related:
+            # Add related queries based on the main query
+            related_queries = self._get_related_queries(search_query)
+            queries.extend(related_queries)
+        
+        if category_search:
+            # Add category-based queries
+            category_queries = self._get_category_queries(search_query)
+            queries.extend(category_queries)
+        
+        # Perform search
+        start_time = time.time()
+        similarity_scores = self.clap_manager.audio_text_matching(audio_path, queries)
+        search_time = time.time() - start_time
+        
+        search_results["results"] = similarity_scores
+        search_results["search_time"] = search_time
+        
+        # Analyze search success
+        success_analysis = self._analyze_search_success(similarity_scores, search_query)
+        search_results["success_analysis"] = success_analysis
+        
+        # Find category matches
+        category_matches = self._find_category_matches(similarity_scores)
+        search_results["category_matches"] = category_matches
+        
+        # Generate recommendations
+        recommendations = self._generate_recommendations(similarity_scores, success_analysis)
+        search_results["recommendations"] = recommendations
+        
+        return search_results
+    
+    def _get_related_queries(self, main_query: str) -> List[str]:
+        """Get related queries based on the main query
+        
+        Args:
+            main_query: Main search query
+            
+        Returns:
+            List[str]: Related queries
+        """
+        related_queries = []
+        
+        # Simple keyword-based expansion
+        query_lower = main_query.lower()
+        
+        if "音楽" in query_lower or "music" in query_lower:
+            related_queries.extend(["楽器の音", "メロディー", "リズム"])
+        elif "人" in query_lower or "voice" in query_lower or "speech" in query_lower:
+            related_queries.extend(["会話", "笑い声", "歌声"])
+        elif "鳥" in query_lower or "bird" in query_lower:
+            related_queries.extend(["動物の鳴き声", "自然の音"])
+        elif "車" in query_lower or "car" in query_lower:
+            related_queries.extend(["エンジン音", "機械の音"])
+        elif "雨" in query_lower or "rain" in query_lower:
+            related_queries.extend(["風の音", "雷の音"])
+        
+        return list(set(related_queries))  # Remove duplicates
+    
+    def _get_category_queries(self, search_query: str) -> List[str]:
+        """Get category-based queries
+        
+        Args:
+            search_query: Search query
+            
+        Returns:
+            List[str]: Category-based queries
+        """
+        category_queries = []
+        query_lower = search_query.lower()
+        
+        # Find matching categories
+        for category, queries in self.audio_categories.items():
+            for query in queries:
+                if any(keyword in query_lower for keyword in query.split()):
+                    category_queries.extend(queries[:5])  # Limit to 5 queries per category
+                    break
+        
+        return list(set(category_queries))  # Remove duplicates
+    
+    def _analyze_search_success(self, similarity_scores: Dict[str, float], 
+                               main_query: str) -> Dict[str, Any]:
+        """Analyze search success based on similarity scores
+        
+        Args:
+            similarity_scores: Dictionary of query to similarity score
+            main_query: Main search query
+            
+        Returns:
+            Dict[str, Any]: Success analysis
+        """
+        if not similarity_scores:
+            return {
+                "is_successful": False,
+                "confidence_level": "none",
+                "best_score": 0.0,
+                "main_query_score": 0.0,
+                "average_score": 0.0,
+                "score_distribution": {},
+                "success_reason": "検索結果がありません"
+            }
+        
+        # Get main query score
+        main_query_score = similarity_scores.get(main_query, 0.0)
+        
+        # Get best score
+        best_score = max(similarity_scores.values())
+        best_query = max(similarity_scores.items(), key=lambda x: x[1])[0]
+        
+        # Calculate average score
+        average_score = sum(similarity_scores.values()) / len(similarity_scores)
+        
+        # Determine confidence level
+        confidence_level = "none"
+        if best_score >= self.success_thresholds["excellent"]:
+            confidence_level = "excellent"
+        elif best_score >= self.success_thresholds["good"]:
+            confidence_level = "good"
+        elif best_score >= self.success_thresholds["fair"]:
+            confidence_level = "fair"
+        elif best_score >= self.success_thresholds["poor"]:
+            confidence_level = "poor"
+        
+        # Determine if search is successful
+        is_successful = best_score >= self.success_thresholds["fair"]
+        
+        # Generate success reason
+        success_reason = self._generate_success_reason(
+            is_successful, confidence_level, best_score, main_query_score, best_query
+        )
+        
+        # Score distribution
+        score_distribution = {
+            "excellent": len([s for s in similarity_scores.values() if s >= self.success_thresholds["excellent"]]),
+            "good": len([s for s in similarity_scores.values() if s >= self.success_thresholds["good"]]),
+            "fair": len([s for s in similarity_scores.values() if s >= self.success_thresholds["fair"]]),
+            "poor": len([s for s in similarity_scores.values() if s >= self.success_thresholds["poor"]])
+        }
+        
+        return {
+            "is_successful": is_successful,
+            "confidence_level": confidence_level,
+            "best_score": best_score,
+            "best_query": best_query,
+            "main_query_score": main_query_score,
+            "average_score": average_score,
+            "score_distribution": score_distribution,
+            "success_reason": success_reason
+        }
+    
+    def _generate_success_reason(self, is_successful: bool, confidence_level: str,
+                                best_score: float, main_query_score: float, 
+                                best_query: str) -> str:
+        """Generate human-readable success reason
+        
+        Args:
+            is_successful: Whether search was successful
+            confidence_level: Confidence level
+            best_score: Best similarity score
+            main_query_score: Main query score
+            best_query: Best matching query
+            
+        Returns:
+            str: Success reason
+        """
+        if not is_successful:
+            return f"検索に失敗しました。最高スコア: {best_score:.3f} (閾値: {self.success_thresholds['fair']})"
+        
+        reasons = []
+        
+        if confidence_level == "excellent":
+            reasons.append("優秀な検索結果")
+        elif confidence_level == "good":
+            reasons.append("良好な検索結果")
+        elif confidence_level == "fair":
+            reasons.append("普通の検索結果")
+        
+        if best_query != "main_query" and main_query_score < best_score:
+            reasons.append(f"関連クエリ「{best_query}」がより良いマッチ")
+        
+        if best_score > 0.8:
+            reasons.append("非常に高い類似度")
+        elif best_score > 0.6:
+            reasons.append("高い類似度")
+        
+        return " | ".join(reasons) if reasons else "検索成功"
+    
+    def _find_category_matches(self, similarity_scores: Dict[str, float]) -> Dict[str, float]:
+        """Find category matches based on similarity scores
+        
+        Args:
+            similarity_scores: Dictionary of query to similarity score
+            
+        Returns:
+            Dict[str, float]: Category to average score mapping
+        """
+        category_scores = {}
+        
+        for category, queries in self.audio_categories.items():
+            category_query_scores = []
+            for query in queries:
+                if query in similarity_scores:
+                    category_query_scores.append(similarity_scores[query])
+            
+            if category_query_scores:
+                category_scores[category] = sum(category_query_scores) / len(category_query_scores)
+        
+        return category_scores
+    
+    def _generate_recommendations(self, similarity_scores: Dict[str, float],
+                                 success_analysis: Dict[str, Any]) -> List[str]:
+        """Generate search recommendations
+        
+        Args:
+            similarity_scores: Dictionary of query to similarity score
+            success_analysis: Success analysis results
+            
+        Returns:
+            List[str]: List of recommendations
+        """
+        recommendations = []
+        
+        if not success_analysis.get("is_successful", False):
+            recommendations.append("より具体的な検索クエリを試してください")
+            recommendations.append("音声の種類や特徴を詳しく説明してください")
+            recommendations.append("複数のキーワードを組み合わせてみてください")
+        
+        if success_analysis.get("confidence_level") == "poor":
+            recommendations.append("検索結果の信頼度が低いです。別の表現を試してください")
+        
+        # Find best matching category
+        category_matches = self._find_category_matches(similarity_scores)
+        if category_matches:
+            best_category = max(category_matches.items(), key=lambda x: x[1])[0]
+            recommendations.append(f"「{best_category}」カテゴリの音声の可能性が高いです")
+        
+        return recommendations
+    
+    def get_search_statistics(self) -> Dict[str, Any]:
+        """Get search engine statistics
+        
+        Returns:
+            Dict[str, Any]: Search engine statistics
+        """
+        return {
+            "total_categories": len(self.audio_categories),
+            "total_queries": sum(len(queries) for queries in self.audio_categories.values()),
+            "success_thresholds": self.success_thresholds,
+            "categories": list(self.audio_categories.keys())
+        } 
