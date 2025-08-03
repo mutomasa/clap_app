@@ -7,6 +7,7 @@ import streamlit as st
 import time
 import os
 import tempfile
+import pandas as pd
 from typing import Dict, List, Any, Optional
 import warnings
 warnings.filterwarnings('ignore')
@@ -116,6 +117,8 @@ class CLAPApp:
             st.session_state.audio_features = {}
         if 'processing_times' not in st.session_state:
             st.session_state.processing_times = {}
+        if 'detection_timing_data' not in st.session_state:
+            st.session_state.detection_timing_data = {}
     
     def run(self):
         """Run the application"""
@@ -180,21 +183,49 @@ class CLAPApp:
                 st.session_state.audio_path = tmp_file.name
                 st.session_state.audio_file = uploaded_file
             
-            # Display audio player
-            st.sidebar.audio(uploaded_file, format=f"audio/{uploaded_file.name.split('.')[-1]}")
-            
-            # Audio file info
+            # Validate audio file
             if st.session_state.audio_path:
-                audio_info = self.audio_analyzer.analyze_audio_file(st.session_state.audio_path)
-                if audio_info:
-                    st.sidebar.subheader("📋 音声情報")
-                    st.sidebar.write(f"**長さ:** {audio_info['duration']:.2f}秒")
-                    st.sidebar.write(f"**サンプルレート:** {audio_info['sample_rate']} Hz")
-                    st.sidebar.write(f"**チャンネル数:** {audio_info['channels']}")
-                    st.sidebar.write(f"**ファイルサイズ:** {audio_info['file_size_mb']:.2f} MB")
-                    
-                    # Store audio features
-                    st.session_state.audio_features = audio_info
+                with st.spinner("音声ファイルを検証中..."):
+                    validation = self.audio_analyzer.validate_audio_file(st.session_state.audio_path)
+                
+                # Display validation results
+                if not validation["is_valid"]:
+                    st.sidebar.error("❌ 音声ファイルの検証に失敗しました")
+                    with st.sidebar.expander("🔍 検証エラー詳細"):
+                        for error in validation["errors"]:
+                            st.error(f"• {error}")
+                    return
+                
+                # Show warnings if any
+                if validation["warnings"]:
+                    st.sidebar.warning("⚠️ 音声ファイルに警告があります")
+                    with st.sidebar.expander("⚠️ 警告詳細"):
+                        for warning in validation["warnings"]:
+                            st.warning(f"• {warning}")
+                
+                # Display audio player
+                st.sidebar.audio(uploaded_file, format=f"audio/{uploaded_file.name.split('.')[-1]}")
+                
+                # Audio file info
+                try:
+                    audio_info = self.audio_analyzer.analyze_audio_file(st.session_state.audio_path)
+                    if audio_info and audio_info.get('duration', 0) > 0:
+                        st.sidebar.subheader("📋 音声情報")
+                        st.sidebar.write(f"**長さ:** {audio_info.get('duration', 0):.2f}秒")
+                        st.sidebar.write(f"**サンプルレート:** {audio_info.get('sample_rate', 0)} Hz")
+                        st.sidebar.write(f"**チャンネル数:** {audio_info.get('channels', 0)}")
+                        st.sidebar.write(f"**ファイルサイズ:** {audio_info.get('file_size_mb', 0):.2f} MB")
+                        
+                        # Store audio features
+                        st.session_state.audio_features = audio_info
+                        st.sidebar.success("✅ 音声ファイルが正常に読み込まれました")
+                    else:
+                        st.sidebar.warning("⚠️ 音声ファイルの分析に失敗しました")
+                except Exception as e:
+                    st.sidebar.error(f"❌ 音声分析エラー: {str(e)}")
+                    import traceback
+                    with st.sidebar.expander("詳細エラー情報"):
+                        st.code(traceback.format_exc())
         
         # Sample audio files
         st.sidebar.subheader("🎵 サンプル音声")
@@ -316,14 +347,26 @@ class CLAPApp:
             for i, query in enumerate(all_queries, 1):
                 st.sidebar.write(f"{i}. {query}")
         
-        if st.sidebar.button("選択したクエリで分析", help="音声ファイルとクエリを分析します"):
-            if st.session_state.audio_path and st.session_state.model_loaded:
-                if all_queries:
-                    self._analyze_audio_text_similarity(all_queries)
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            if st.button("基本分析", help="基本的な音声-テキスト類似度分析"):
+                if st.session_state.audio_path and st.session_state.model_loaded:
+                    if all_queries:
+                        self._analyze_audio_text_similarity(all_queries)
+                    else:
+                        st.warning("分析するクエリを入力または選択してください")
                 else:
-                    st.sidebar.warning("分析するクエリを入力または選択してください")
-            else:
-                st.sidebar.warning("音声ファイルとモデルの両方が必要です")
+                    st.warning("音声ファイルとモデルの両方が必要です")
+        
+        with col2:
+            if st.button("詳細分析", help="タイミング情報付きの詳細分析"):
+                if st.session_state.audio_path and st.session_state.model_loaded:
+                    if all_queries:
+                        self._analyze_audio_text_similarity_with_timing(all_queries)
+                    else:
+                        st.warning("分析するクエリを入力または選択してください")
+                else:
+                    st.warning("音声ファイルとモデルの両方が必要です")
     
     def _display_main_content(self):
         """Display the main content area"""
@@ -336,10 +379,11 @@ class CLAPApp:
             return
         
         # Create tabs
-        tab1, tab2, tab3, tab4 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "🎵 音声分析", 
             "🔍 テキスト-音声マッチング", 
             "📊 可視化", 
+            "⏱️ 検出タイミング分析",
             "⚙️ デバッグ情報"
         ])
         
@@ -353,59 +397,113 @@ class CLAPApp:
             self._display_visualization_tab()
         
         with tab4:
+            self._display_timing_analysis_tab()
+        
+        with tab5:
             self._display_debug_tab()
     
     def _display_audio_analysis_tab(self):
         """Display audio analysis tab"""
         st.header("🎵 音声分析")
         
-        if st.session_state.audio_features:
-            # Audio features display
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("📋 基本情報")
-                features = st.session_state.audio_features
+        if st.session_state.audio_features and st.session_state.audio_path:
+            try:
+                # Audio features display
+                col1, col2 = st.columns(2)
                 
-                st.metric("長さ", f"{features['duration']:.2f}秒")
-                st.metric("サンプルレート", f"{features['sample_rate']} Hz")
-                st.metric("チャンネル数", features['channels'])
-                st.metric("ファイルサイズ", f"{features['file_size_mb']:.2f} MB")
-            
-            with col2:
-                st.subheader("🎛️ スペクトル特徴")
-                st.metric("スペクトル重心", f"{features.get('spectral_centroid_mean', 0):.2f}")
-                st.metric("スペクトル帯域幅", f"{features.get('spectral_bandwidth_mean', 0):.2f}")
-                st.metric("ゼロクロス率", f"{features.get('zero_crossing_rate_mean', 0):.4f}")
-                st.metric("RMSエネルギー", f"{features.get('rms_mean', 0):.4f}")
-            
-            # Audio visualizations
-            st.subheader("📈 音声可視化")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Waveform
-                waveform_fig = self.viz_manager.create_audio_waveform(st.session_state.audio_path)
-                st.plotly_chart(waveform_fig, use_container_width=True)
-            
-            with col2:
-                # Spectrogram
-                spectrogram_fig = self.viz_manager.create_spectrogram(st.session_state.audio_path)
-                st.plotly_chart(spectrogram_fig, use_container_width=True)
-            
-            # MFCC and Radar chart
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # MFCC
-                mfcc_fig = self.viz_manager.create_mfcc_heatmap(st.session_state.audio_path)
-                st.plotly_chart(mfcc_fig, use_container_width=True)
-            
-            with col2:
-                # Radar chart
-                radar_fig = self.viz_manager.create_audio_features_radar(st.session_state.audio_features)
-                st.plotly_chart(radar_fig, use_container_width=True)
+                with col1:
+                    st.subheader("📋 基本情報")
+                    features = st.session_state.audio_features
+                    
+                    st.metric("長さ", f"{features.get('duration', 0):.2f}秒")
+                    st.metric("サンプルレート", f"{features.get('sample_rate', 0)} Hz")
+                    st.metric("チャンネル数", features.get('channels', 0))
+                    st.metric("ファイルサイズ", f"{features.get('file_size_mb', 0):.2f} MB")
+                
+                with col2:
+                    st.subheader("🎛️ スペクトル特徴")
+                    st.metric("スペクトル重心", f"{features.get('spectral_centroid_mean', 0):.2f}")
+                    st.metric("スペクトル帯域幅", f"{features.get('spectral_bandwidth_mean', 0):.2f}")
+                    st.metric("ゼロクロス率", f"{features.get('zero_crossing_rate_mean', 0):.4f}")
+                    st.metric("RMSエネルギー", f"{features.get('rms_mean', 0):.4f}")
+                
+                # Audio visualizations
+                st.subheader("📈 音声可視化")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Waveform
+                    st.write("**波形表示**")
+                    try:
+                        waveform_fig = self.viz_manager.create_audio_waveform(st.session_state.audio_path)
+                        st.plotly_chart(waveform_fig, use_container_width=True, key="audio_analysis_waveform")
+                    except Exception as e:
+                        st.error(f"波形の表示に失敗しました: {str(e)}")
+                        import traceback
+                        with st.expander("詳細エラー情報"):
+                            st.code(traceback.format_exc())
+                
+                with col2:
+                    # Spectrogram
+                    st.write("**スペクトログラム**")
+                    try:
+                        spectrogram_fig = self.viz_manager.create_spectrogram(st.session_state.audio_path)
+                        st.plotly_chart(spectrogram_fig, use_container_width=True, key="audio_analysis_spectrogram")
+                    except Exception as e:
+                        st.error(f"スペクトログラムの表示に失敗しました: {str(e)}")
+                        import traceback
+                        with st.expander("詳細エラー情報"):
+                            st.code(traceback.format_exc())
+                
+                # MFCC and Radar chart
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # MFCC
+                    st.write("**MFCC特徴量**")
+                    try:
+                        mfcc_fig = self.viz_manager.create_mfcc_heatmap(st.session_state.audio_path)
+                        st.plotly_chart(mfcc_fig, use_container_width=True, key="audio_analysis_mfcc")
+                    except Exception as e:
+                        st.error(f"MFCCの表示に失敗しました: {str(e)}")
+                        import traceback
+                        with st.expander("詳細エラー情報"):
+                            st.code(traceback.format_exc())
+                
+                with col2:
+                    # Radar chart
+                    st.write("**音声特徴レーダーチャート**")
+                    try:
+                        radar_fig = self.viz_manager.create_audio_features_radar(st.session_state.audio_features)
+                        st.plotly_chart(radar_fig, use_container_width=True, key="audio_analysis_radar")
+                    except Exception as e:
+                        st.error(f"レーダーチャートの表示に失敗しました: {str(e)}")
+                        import traceback
+                        with st.expander("詳細エラー情報"):
+                            st.code(traceback.format_exc())
+                
+                # Comprehensive dashboard
+                st.subheader("📊 総合分析ダッシュボード")
+                try:
+                    dashboard_fig = self.viz_manager.create_audio_analysis_dashboard(
+                        st.session_state.audio_path, 
+                        st.session_state.audio_features
+                    )
+                    st.plotly_chart(dashboard_fig, use_container_width=True, key="audio_analysis_dashboard")
+                except Exception as e:
+                    st.error(f"ダッシュボードの表示に失敗しました: {str(e)}")
+                    import traceback
+                    with st.expander("詳細エラー情報"):
+                        st.code(traceback.format_exc())
+                        
+            except Exception as e:
+                st.error(f"音声分析の表示に失敗しました: {str(e)}")
+                import traceback
+                with st.expander("詳細エラー情報"):
+                    st.code(traceback.format_exc())
+        else:
+            st.warning("⚠️ 音声ファイルが読み込まれていません。サイドバーで音声ファイルをアップロードまたはサンプル音声を選択してください。")
     
     def _display_text_audio_matching_tab(self):
         """Display text-audio matching tab"""
@@ -459,20 +557,145 @@ class CLAPApp:
             
             # Similarity chart
             similarity_fig = self.viz_manager.create_similarity_bar_chart(st.session_state.similarity_results)
-            st.plotly_chart(similarity_fig, use_container_width=True)
+            st.plotly_chart(similarity_fig, use_container_width=True, key="matching_similarity_chart")
     
     def _display_visualization_tab(self):
         """Display visualization tab"""
         st.header("📊 可視化")
         
         if st.session_state.audio_path and st.session_state.audio_features:
-            # Comprehensive dashboard
-            st.subheader("🎛️ 音声分析ダッシュボード")
-            dashboard_fig = self.viz_manager.create_audio_analysis_dashboard(
-                st.session_state.audio_path,
-                st.session_state.audio_features
-            )
-            st.plotly_chart(dashboard_fig, use_container_width=True)
+            try:
+                # Comprehensive dashboard
+                st.subheader("🎛️ 音声分析ダッシュボード")
+                try:
+                    dashboard_fig = self.viz_manager.create_audio_analysis_dashboard(
+                        st.session_state.audio_path,
+                        st.session_state.audio_features
+                    )
+                    st.plotly_chart(dashboard_fig, use_container_width=True, key="visualization_dashboard")
+                except Exception as e:
+                    st.error(f"ダッシュボードの表示に失敗しました: {str(e)}")
+                    import traceback
+                    with st.expander("詳細エラー情報"):
+                        st.code(traceback.format_exc())
+                
+                # Individual visualizations
+                st.subheader("📈 個別可視化")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**波形表示**")
+                    try:
+                        waveform_fig = self.viz_manager.create_audio_waveform(st.session_state.audio_path)
+                        st.plotly_chart(waveform_fig, use_container_width=True, key="visualization_waveform")
+                    except Exception as e:
+                        st.error(f"波形の表示に失敗しました: {str(e)}")
+                        import traceback
+                        with st.expander("詳細エラー情報"):
+                            st.code(traceback.format_exc())
+                
+                with col2:
+                    st.write("**スペクトログラム**")
+                    try:
+                        spectrogram_fig = self.viz_manager.create_spectrogram(st.session_state.audio_path)
+                        st.plotly_chart(spectrogram_fig, use_container_width=True, key="visualization_spectrogram")
+                    except Exception as e:
+                        st.error(f"スペクトログラムの表示に失敗しました: {str(e)}")
+                        import traceback
+                        with st.expander("詳細エラー情報"):
+                            st.code(traceback.format_exc())
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**MFCC特徴量**")
+                    try:
+                        mfcc_fig = self.viz_manager.create_mfcc_heatmap(st.session_state.audio_path)
+                        st.plotly_chart(mfcc_fig, use_container_width=True, key="visualization_mfcc")
+                    except Exception as e:
+                        st.error(f"MFCCの表示に失敗しました: {str(e)}")
+                        import traceback
+                        with st.expander("詳細エラー情報"):
+                            st.code(traceback.format_exc())
+                
+                with col2:
+                    st.write("**音声特徴レーダーチャート**")
+                    try:
+                        radar_fig = self.viz_manager.create_audio_features_radar(st.session_state.audio_features)
+                        st.plotly_chart(radar_fig, use_container_width=True, key="visualization_radar")
+                    except Exception as e:
+                        st.error(f"レーダーチャートの表示に失敗しました: {str(e)}")
+                        import traceback
+                        with st.expander("詳細エラー情報"):
+                            st.code(traceback.format_exc())
+                
+            except Exception as e:
+                st.error(f"可視化の表示に失敗しました: {str(e)}")
+                import traceback
+                with st.expander("詳細エラー情報"):
+                    st.code(traceback.format_exc())
+        else:
+            st.warning("⚠️ 音声ファイルが読み込まれていません。サイドバーで音声ファイルをアップロードまたはサンプル音声を選択してください。")
+    
+    def _display_timing_analysis_tab(self):
+        """Display timing analysis tab"""
+        st.header("⏱️ 検出タイミング分析")
+        
+        if st.session_state.detection_timing_data:
+            timing_data = st.session_state.detection_timing_data
+            
+            # Summary table
+            st.subheader("📋 検出結果サマリー")
+            summary_fig = self.viz_manager.create_detection_summary_table(timing_data)
+            st.plotly_chart(summary_fig, use_container_width=True, key="timing_summary")
+            
+            # Detailed timing analysis
+            st.subheader("📊 詳細タイミング分析")
+            timing_fig = self.viz_manager.create_detection_timing_analysis(timing_data)
+            st.plotly_chart(timing_fig, use_container_width=True, key="timing_analysis")
+            
+            # Timing details
+            st.subheader("🔍 タイミング詳細")
+            timing = timing_data.get("timing", {})
+            audio_info = timing_data.get("audio_info", {})
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("総処理時間", f"{timing.get('total_time', 0):.3f}秒")
+                st.metric("音声処理時間", f"{timing.get('audio_processing_time', 0):.3f}秒")
+            with col2:
+                st.metric("テキスト処理時間", f"{timing.get('text_processing_time', 0):.3f}秒")
+                st.metric("音声長", f"{audio_info.get('duration', 0):.2f}秒")
+            with col3:
+                # 処理効率の計算（ゼロ除算を防ぐ）
+                total_time = timing.get('total_time', 0)
+                audio_duration = audio_info.get('duration', 0)
+                if total_time > 0:
+                    efficiency = audio_duration / total_time
+                    st.metric("処理効率", f"{efficiency:.2f}x")
+                else:
+                    st.metric("処理効率", "N/A")
+                st.metric("クエリ数", len(timing_data.get("similarities", {})))
+            
+            # Per query timing details
+            if timing.get("per_query_times"):
+                st.subheader("📈 クエリ別処理時間")
+                per_query_data = timing["per_query_times"]
+                
+                query_df = pd.DataFrame([
+                    {
+                        "クエリ": query,
+                        "総時間": data.get("total_time", 0),
+                        "類似度計算時間": data.get("similarity_time", 0),
+                        "類似度スコア": timing_data["similarities"].get(query, 0)
+                    }
+                    for query, data in per_query_data.items()
+                ])
+                
+                st.dataframe(query_df, use_container_width=True)
+        else:
+            st.warning("⚠️ 詳細分析データがありません。サイドバーで「詳細分析」を実行してください。")
     
     def _display_debug_tab(self):
         """Display debug information tab"""
@@ -482,13 +705,13 @@ class CLAPApp:
         st.subheader("🤖 モデル情報")
         model_info = self.clap_manager.get_model_info()
         model_info_fig = self.viz_manager.create_model_info_display(model_info)
-        st.plotly_chart(model_info_fig, use_container_width=True)
+        st.plotly_chart(model_info_fig, use_container_width=True, key="debug_model_info")
         
         # Performance metrics
         if st.session_state.processing_times:
             st.subheader("⏱️ 処理時間")
             performance_fig = self.viz_manager.create_performance_metrics(st.session_state.processing_times)
-            st.plotly_chart(performance_fig, use_container_width=True)
+            st.plotly_chart(performance_fig, use_container_width=True, key="debug_performance")
         
         # Audio features details
         if st.session_state.audio_features:
@@ -546,6 +769,36 @@ class CLAPApp:
             st.session_state.similarity_results.update(results)
             
             st.success(f"✅ 分析完了 ({processing_time:.2f}秒)")
+    
+    def _analyze_audio_text_similarity_with_timing(self, text_queries: List[str]):
+        """Analyze similarity between audio and text queries with detailed timing
+        
+        Args:
+            text_queries: List of text queries to analyze
+        """
+        if not st.session_state.audio_path or not st.session_state.model_loaded:
+            return
+        
+        with st.spinner("音声-テキスト類似度を詳細分析中..."):
+            # Perform audio-text matching with timing
+            results = self.clap_manager.audio_text_matching_with_timing(
+                st.session_state.audio_path,
+                text_queries
+            )
+            
+            # Store results
+            st.session_state.detection_timing_data = results
+            st.session_state.similarity_results = results.get("similarities", {})
+            
+            # Store processing times
+            timing = results.get("timing", {})
+            st.session_state.processing_times.update({
+                "Total Detection Time": timing.get("total_time", 0),
+                "Audio Processing": timing.get("audio_processing_time", 0),
+                "Text Processing": timing.get("text_processing_time", 0)
+            })
+            
+            st.success(f"✅ 詳細分析完了 (総時間: {timing.get('total_time', 0):.2f}秒)")
     
     def _load_sample_audio(self, audio_name: str):
         """Load sample audio file

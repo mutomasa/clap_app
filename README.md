@@ -15,6 +15,7 @@ CLAP（Contrastive Language-Audio Pretraining）を使用した音声-テキス�
 - [使用方法](#使用方法)
 - [技術仕様](#技術仕様)
 - [ライブラリ](#ライブラリ)
+- [将来の拡張案](#-将来の拡張案)
 - [トラブルシューティング](#トラブルシューティング)
 - [貢献](#貢献)
 - [ライセンス](#ライセンス)
@@ -233,6 +234,26 @@ streamlit run app.py
 - **機械学習**: PyTorch, transformers
 - **可視化**: Plotly, matplotlib
 - **数値計算**: NumPy, SciPy
+- **ベクトル化**: メモリ上リアルタイム処理（RAG非使用）
+
+### 🔍 **現在の実装方式**
+- **リアルタイムエンコーディング**: 音声ファイルの即座なベクトル化
+- **メモリ上類似度計算**: コサイン類似度による直接計算
+- **セッション管理**: Streamlitセッション状態での結果保存
+- **軽量設計**: 外部データベースへの依存なし
+
+### 📊 **現在の実装 vs RAGシステム比較**
+
+| 特徴 | 現在のCLAPアプリ | RAGシステム |
+|------|------------------|-------------|
+| **ベクトル保存** | メモリ上のみ | ベクトルDB（Pinecone、Weaviate等） |
+| **検索方式** | リアルタイム計算 | 事前計算済みベクトルの検索 |
+| **スケーラビリティ** | 単一セッション | 大規模データセット対応 |
+| **永続化** | なし（セッション終了で消失） | 永続的保存 |
+| **処理速度** | 高速（リアルタイム） | 中程度（インデックス検索） |
+| **メモリ使用量** | 低（一時的） | 高（永続的） |
+| **実装複雑度** | 低 | 高 |
+| **用途** | デモンストレーション・実験 | 本格的な音声検索システム |
 
 ### 🔧 **処理フロー**
 1. **音声読み込み**: librosaで音声ファイルを読み込み
@@ -283,6 +304,135 @@ dependencies = [
     "pydub>=0.25.0",
 ]
 ```
+
+## 🔮 将来の拡張案
+
+### 🎯 **RAG（Retrieval-Augmented Generation）機能の追加**
+
+現在のアプリケーションはメモリ上でのリアルタイム処理を採用していますが、以下のRAG機能を追加することで、より高度な音声理解システムを構築できます。
+
+#### **📚 音声ライブラリの構築**
+```python
+class AudioLibrary:
+    def __init__(self):
+        self.audio_collection = {}  # 音声ファイルのメタデータ
+        self.vector_db = None       # ベクトルデータベース
+    
+    def add_audio_file(self, audio_path: str, metadata: dict):
+        # 音声をエンコードしてベクトルDBに保存
+        audio_embedding = self.clap_manager.encode_audio(audio_path)
+        self.vector_db.store(audio_embedding, metadata)
+```
+
+**機能**:
+- 大量の音声ファイルの事前エンコード
+- メタデータ付き音声コレクションの管理
+- ベクトルデータベース（Pinecone、Weaviate等）との統合
+- 音声ファイルのバッチ処理とインデックス化
+
+#### **🔍 セマンティック検索**
+```python
+def semantic_audio_search(self, text_query: str, top_k: int = 10):
+    # テキストクエリをベクトル化
+    text_embedding = self.clap_manager.encode_text(text_query)
+    
+    # ベクトルDBで類似音声を検索
+    results = self.vector_db.search(text_embedding, top_k=top_k)
+    
+    return results
+```
+
+**機能**:
+- 自然言語による音声内容検索
+- 音声-音声間の類似度検索
+- ハイブリッド検索（テキスト + 音声クエリ）
+- 検索結果のランキングとフィルタリング
+
+#### **🎵 音声推奨システム**
+```python
+def recommend_similar_audio(self, audio_id: str, top_k: int = 5):
+    # 基準音声のベクトルを取得
+    base_embedding = self.vector_db.get_embedding(audio_id)
+    
+    # 類似音声を検索
+    similar_audio = self.vector_db.search(base_embedding, top_k=top_k)
+    
+    return similar_audio
+```
+
+**機能**:
+- 類似音声の自動推薦
+- ユーザー嗜好に基づく推奨
+- 協調フィルタリングの実装
+- 推奨理由の説明機能
+
+#### **🏷️ 音声分類システム**
+```python
+def auto_classify_audio(self, audio_path: str):
+    # 音声をエンコード
+    audio_embedding = self.clap_manager.encode_audio(audio_path)
+    
+    # 事前定義されたカテゴリとの類似度を計算
+    categories = ["音楽", "自然", "都市", "人の声", "機械", "動物"]
+    category_embeddings = [self.clap_manager.encode_text(cat) for cat in categories]
+    
+    # 最も類似度の高いカテゴリを選択
+    similarities = [self.compute_similarity(audio_embedding, cat_emb) 
+                   for cat_emb in category_embeddings]
+    
+    best_category = categories[np.argmax(similarities)]
+    return best_category, max(similarities)
+```
+
+**機能**:
+- カテゴリ別の自動分類
+- マルチラベル分類
+- 信頼度スコアの提供
+- カスタム分類器の学習
+
+### 🛠️ **技術的実装案**
+
+#### **ベクトルデータベースの選択**
+| データベース | 特徴 | 用途 |
+|-------------|------|------|
+| **Pinecone** | マネージドサービス、高速検索 | 本格的な音声検索システム |
+| **Weaviate** | オープンソース、スキーマ定義 | カスタム音声ライブラリ |
+| **Qdrant** | 高性能、Rust実装 | 大規模音声データセット |
+| **Chroma** | 軽量、Pythonネイティブ | 開発・テスト環境 |
+
+#### **システムアーキテクチャ**
+```
+音声ファイル → CLAPエンコーダー → ベクトルDB
+     ↓
+テキストクエリ → CLAPエンコーダー → 検索エンジン
+     ↓
+検索結果 → ランキング → 推奨システム
+```
+
+#### **実装ステップ**
+1. **ベクトルデータベースのセットアップ**
+2. **音声ライブラリ管理システムの構築**
+3. **検索APIの実装**
+4. **推奨アルゴリズムの開発**
+5. **分類システムの統合**
+6. **Web UIの拡張**
+
+### 📊 **期待される効果**
+
+#### **ユーザー体験の向上**
+- 大規模音声ライブラリからの高速検索
+- パーソナライズされた音声推奨
+- 直感的な音声分類機能
+
+#### **システム性能の向上**
+- 事前計算による高速レスポンス
+- スケーラブルな音声処理
+- 永続的な音声データ管理
+
+#### **ビジネス価値**
+- 音声コンテンツの効率的な管理
+- 音声検索エンジンの構築
+- 音声分析プラットフォームの提供
 
 ## トラブルシューティング
 
@@ -342,3 +492,100 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [librosa](https://librosa.org/) for audio processing capabilities
 - [Streamlit](https://streamlit.io/) for web application framework
 - [Plotly](https://plotly.com/) for interactive visualizations 
+
+## 🔍 **現在のアーキテクチャ**
+
+### **メモリ上ベクトル化の仕組み**
+
+1. **リアルタイムエンコーディング**
+   ```python
+   # 音声ファイルをアップロード時に即座にエンコード
+   audio_embeddings = self.clap_manager.encode_audio(audio_tensor)
+   text_embeddings = self.clap_manager.encode_text(text_query)
+   ```
+
+2. **メモリ上での類似度計算**
+   ```python
+   # コサイン類似度を直接計算
+   similarity = torch.cosine_similarity(audio_norm, text_norm, dim=-1)
+   ```
+
+3. **セッション状態での管理**
+   ```python
+   # Streamlitのセッション状態に結果を保存
+   st.session_state.similarity_results = results
+   st.session_state.audio_features = audio_info
+   ```
+
+### **RAGとの違い**
+
+| 特徴 | 現在のCLAPアプリ | RAGシステム |
+|------|------------------|-------------|
+| **ベクトル保存** | メモリ上のみ | ベクトルDB（Pinecone、Weaviate等） |
+| **検索方式** | リアルタイム計算 | 事前計算済みベクトルの検索 |
+| **スケーラビリティ** | 単一セッション | 大規模データセット対応 |
+| **永続化** | なし（セッション終了で消失） | 永続的保存 |
+| **処理速度** | 高速（リアルタイム） | 中程度（インデックス検索） |
+
+## 🚀 **RAG版への拡張可能性**
+
+もしRAG機能を追加したい場合は、以下のような拡張が可能です：
+
+### **1. ベクトルデータベースの統合**
+```python
+# 例：Pineconeとの統合
+import pinecone
+
+class CLAPRAGManager:
+    def __init__(self):
+        self.pinecone_index = pinecone.Index("clap-audio-index")
+    
+    def store_audio_embedding(self, audio_id: str, audio_embedding: np.ndarray):
+        self.pinecone_index.upsert([(audio_id, audio_embedding.tolist())])
+    
+    def search_similar_audio(self, text_query: str, top_k: int = 5):
+        text_embedding = self.clap_manager.encode_text(text_query)
+        results = self.pinecone_index.query(
+            vector=text_embedding.tolist(),
+            top_k=top_k
+        )
+        return results
+```
+
+### **2. 音声ライブラリの構築**
+```python
+class AudioLibrary:
+    def __init__(self):
+        self.audio_collection = {}  # 音声ファイルのメタデータ
+        self.vector_db = None       # ベクトルデータベース
+    
+    def add_audio_file(self, audio_path: str, metadata: dict):
+        # 音声をエンコードしてベクトルDBに保存
+        audio_embedding = self.clap_manager.encode_audio(audio_path)
+        self.vector_db.store(audio_embedding, metadata)
+```
+
+### **3. ハイブリッド検索**
+```python
+<code_block_to_apply_changes_from>
+```
+
+## 💡 **現在のアプリケーションの利点**
+
+1. **シンプルな実装**: 複雑なインフラが不要
+2. **高速レスポンス**: リアルタイムでの類似度計算
+3. **軽量**: 外部データベースへの依存なし
+4. **デモンストレーション**: CLAPモデルの性能を直接確認可能
+
+## 🔮 **将来の拡張案**
+
+もしRAG機能を追加したい場合は、以下のような機能を実装できます：
+
+- **音声ライブラリの構築**: 大量の音声ファイルの事前エンコード
+- **セマンティック検索**: 音声内容による検索機能
+- **音声推奨システム**: 類似音声の推薦
+- **音声分類**: カテゴリ別の自動分類
+
+現在のアプリケーションは、CLAPモデルの基本的な音声-テキスト理解能力をデモンストレーションするのに最適な設計になっています。RAG機能が必要な場合は、上記のような拡張を検討できます。
+
+何か特定の機能を追加したい場合は、お知らせください！ 
